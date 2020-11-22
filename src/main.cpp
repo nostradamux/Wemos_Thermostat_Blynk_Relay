@@ -14,17 +14,24 @@
 #define BLYNK_YELLOW    "#ED9D00"
 #define BLYNK_RED       "#D3435C"
 #define BLYNK_DARK_BLUE "#5F7CD8"
-#define MANUAL_BUTTON				V0
-#define TIME_DISPLAY				V1
-#define TEMPERATURE_GAUGE			V2
-#define CONSIGNA_SLIDER				V3
-#define AUTOMATIC_BUTTON			V4
-#define TIME_TOTAL_HOURS_DISPLAY	V5
+#define MANUAL_BUTTON					V0
+#define TIME_DISPLAY					V1
+#define TEMPERATURE_GAUGE				V2
+#define CONSIGNA_SLIDER					V3
+#define AUTOMATIC_BUTTON				V4
+#define TIME_TOTAL_HOURS_DISPLAY		V5
+#define CALENTADOR_RADIADOR_SELECTOR	V6
+
+#define RADIADOR_TARGET		1
+#define CALDERA_TARGET		0
+
+//To be changed when RADIADOR TARGET is connected
+//#define DEVICE_CONTROL_TARGET		CALDERA_TARGET
+#define DEVICE_CONTROL_TARGET		RADIADOR_TARGET
 
 int relay = D4;  //relay pin to esp8266 - 01 model gp2 pin in app
 int timeSecondsRunning = 0;
 long int timeSecondsTotalRunning = 0;
-int timeMinutesRunning = 0;
 int timeHoursRunning = 0;
 SimpleTimer timer;
 int statusManual = 0;
@@ -36,105 +43,150 @@ static float consigna = 20.0;
 int statusCode;
 int everySec = 1;
 WiFiServer TelnetServer(8266);
+int deviceControl = 0;
+char* deviceControlLogic[2] = {"Caldera","Radiador"};
 
-void task1000ms()
+void Init_All_Controls()
 {
-	if (--everySec == 0)
+	currentStatus = 0;
+	oldStatus = 0;
+	statusManual = 0;
+	statusAutomatic = 0;
+
+	Blynk.virtualWrite(MANUAL_BUTTON, 0);
+	Blynk.virtualWrite(AUTOMATIC_BUTTON, 0);
+	Blynk.virtualWrite(TIME_DISPLAY, 0);
+	Blynk.setProperty(MANUAL_BUTTON, "color", BLYNK_GREEN);
+	Blynk.setProperty(AUTOMATIC_BUTTON, "color", BLYNK_GREEN);
+
+	digitalWrite( relay, LOW);
+}
+
+void taskUpdateValues()
+{
+	Serial.printf("Target %s\n\r",deviceControlLogic[deviceControl]);
+	if(deviceControl == DEVICE_CONTROL_TARGET)
 	{
-		everySec = 1;
-		if (statusCode == 200)
+    	if((statusManual == 1) ||((statusAutomatic == 1)&&(tempSalon < consigna)))
 		{
-		  Serial.printf("Temperature in Salon %.2f ºC\n\r",tempSalon);
+			timeSecondsRunning += 1;
+			timeSecondsTotalRunning += 1;
+
+			currentStatus = 1;
+			if((statusAutomatic == 1)&&(tempSalon < consigna))
+			{
+				Blynk.setProperty(AUTOMATIC_BUTTON, "color", BLYNK_YELLOW);
+			}
 		}
 		else
 		{
-		  Serial.println("Unable to read channel / No internet connection");
+			currentStatus = 0;
+			if((statusAutomatic == 1)&&(tempSalon >= consigna))
+			{
+				Blynk.setProperty(AUTOMATIC_BUTTON, "color", BLYNK_GREEN);
+			}
 		}
-		Blynk.virtualWrite(TIME_DISPLAY, timeMinutesRunning);
-		Blynk.virtualWrite(TEMPERATURE_GAUGE, tempSalon);
-		Blynk.virtualWrite(TIME_TOTAL_HOURS_DISPLAY, timeSecondsTotalRunning/3600);
+		if((oldStatus == 0)&&(currentStatus == 1))
+		{
+			Serial.println ("Activating Heater!");
+			digitalWrite( relay, HIGH);
+			timeSecondsRunning = 0;
+		}
+		else if((oldStatus == 1)&&(currentStatus == 0))
+		{
+			Serial.println ("Deactivating Heater!");
+			digitalWrite( relay, LOW);
+		}
+		oldStatus = currentStatus;
+		if (--everySec == 0)
+		{
+			everySec = 1;
+			if (statusCode == 200)
+			{
+			  Serial.printf("%ds,Temperature in Salon %.2f ºC (%s)\n\r",
+					  timeSecondsTotalRunning,tempSalon,deviceControlLogic[deviceControl]);
+			}
+			else
+			{
+			  Serial.println("Unable to read channel / No internet connection");
+			}
+			Blynk.virtualWrite(TIME_DISPLAY, timeSecondsRunning/60);
+			Blynk.virtualWrite(TEMPERATURE_GAUGE, tempSalon);
+			Blynk.virtualWrite(TIME_TOTAL_HOURS_DISPLAY, timeSecondsTotalRunning/3600);
+		}
 	}
-    if((statusManual == 1) ||((statusAutomatic == 1)&&(tempSalon < consigna)))
-    {
-        timeSecondsRunning += 1;
-        timeSecondsTotalRunning += 1;
-        if(timeSecondsRunning == 60)
-        {
-        	timeMinutesRunning += 1;
-        	timeSecondsRunning = 0;
-        }
-        currentStatus = 1;
-        if((statusAutomatic == 1)&&(tempSalon < consigna))
-        {
-        	Blynk.setProperty(AUTOMATIC_BUTTON, "color", BLYNK_YELLOW);
-        }
-    }
     else
     {
-    	currentStatus = 0;
-    	if((statusAutomatic == 1)&&(tempSalon >= consigna))
-    	{
-    		Blynk.setProperty(AUTOMATIC_BUTTON, "color", BLYNK_GREEN);
-    	}
+    	Serial.printf("Temperatura controlada por Radiador eléctrico...\n\r");
     }
-    if((oldStatus == 0)&&(currentStatus == 1))
-    {
-    	Serial.println ("Activating Heater!");
-        digitalWrite( relay, HIGH);
-    	timeSecondsRunning = 0;
-    }
-    else if((oldStatus == 1)&&(currentStatus == 0))
-    {
-    	Serial.println ("Deactivating Heater!");
-        digitalWrite( relay, LOW);
-    }
-    oldStatus = currentStatus;
+}
+
+BLYNK_CONNECTED() {
+    Blynk.syncAll();
 }
 
 BLYNK_WRITE(AUTOMATIC_BUTTON)
 {
-	statusAutomatic = param.asInt(); // assigning incoming value from pin V4 to a variable
-	if(statusAutomatic == 1)
+	if(deviceControl == DEVICE_CONTROL_TARGET)
 	{
-		Blynk.setProperty(AUTOMATIC_BUTTON, "color", BLYNK_GREEN);
-		timeSecondsRunning=0;
-		statusManual = 0;
-		Blynk.setProperty(MANUAL_BUTTON, "color", BLYNK_GREEN);
-		Blynk.virtualWrite(MANUAL_BUTTON, 0);
-	}
-	else if(statusAutomatic == 0)
-	{
-		digitalWrite( relay, LOW);
-		Blynk.setProperty(AUTOMATIC_BUTTON, "color",BLYNK_GREEN);
+		statusAutomatic = param.asInt(); // assigning incoming value from pin V4 to a variable
+
+		if(statusAutomatic == 1)
+		{
+			Blynk.setProperty(AUTOMATIC_BUTTON, "color", BLYNK_GREEN);
+			timeSecondsRunning=0;
+			statusManual = 0;
+			Blynk.setProperty(MANUAL_BUTTON, "color", BLYNK_GREEN);
+			Blynk.virtualWrite(MANUAL_BUTTON, 0);
+		}
+		else if(statusAutomatic == 0)
+		{
+			digitalWrite( relay, LOW);
+			Blynk.setProperty(AUTOMATIC_BUTTON, "color",BLYNK_GREEN);
+		}
 	}
 }
 
+BLYNK_WRITE(CALENTADOR_RADIADOR_SELECTOR)
+{
+	deviceControl = param.asInt(); // assigning incoming value from pin V5 to a variable
+	Serial.printf("Target changed to %s\n\r",deviceControlLogic[deviceControl]);
+	Serial.println ("Deactivating Heater!");
+	Init_All_Controls();
+}
+
+
 BLYNK_WRITE(CONSIGNA_SLIDER)
 {
-	consigna = param.asFloat(); // assigning incoming value from pin V3 to a variable
-	Serial.printf("Consigna changed to %f, status automatic %d\n\r",consigna,statusAutomatic);
+	if(deviceControl == DEVICE_CONTROL_TARGET)
+	{
+		consigna = param.asFloat(); // assigning incoming value from pin V3 to a variable
+		Serial.printf("Consigna changed to %f, status automatic %d\n\r",consigna,statusAutomatic);
+	}
 
 }
 
 BLYNK_WRITE(MANUAL_BUTTON)
 {
-  statusManual = param.asInt(); // assigning incoming value from pin V0 to a variable
+	if(deviceControl == DEVICE_CONTROL_TARGET)
+	{
+		statusManual = param.asInt(); // assigning incoming value from pin V0 to a variable
+	  if(statusManual == 1)
+	  {
+		Blynk.setProperty(MANUAL_BUTTON, "color", BLYNK_YELLOW);
+		timeSecondsRunning=0;
+		statusAutomatic = 0;
+		Blynk.setProperty(AUTOMATIC_BUTTON, "color", BLYNK_GREEN);
+		Blynk.virtualWrite(AUTOMATIC_BUTTON, 0);
 
-  if(statusManual == 1)
-  {
-    Blynk.setProperty(V0, "color", BLYNK_YELLOW);
-    timeSecondsRunning=0;
-    statusAutomatic = 0;
-	Blynk.setProperty(AUTOMATIC_BUTTON, "color", BLYNK_GREEN);
-	Blynk.virtualWrite(AUTOMATIC_BUTTON, 0);
 
-
-  }
-  else if(statusManual == 0)
-  {
-    Blynk.setProperty(V0, "color",BLYNK_GREEN);
-    Serial.println("Pin set to LOW");
-  }
+	  }
+	  else if(statusManual == 0)
+	  {
+		Blynk.setProperty(MANUAL_BUTTON, "color",BLYNK_GREEN);
+		Serial.println("Pin set to LOW");
+	  }
+	}
 }
 
 void setup()
@@ -155,14 +207,11 @@ void setup()
 	Serial.println(WiFi.localIP());
 
 	Blynk.begin(auth, ssid, password);
-	timer.setInterval(1000L, task1000ms);
+	timer.setInterval(1000L, taskUpdateValues);
 	pinMode(relay, OUTPUT);
 	ThingSpeak.begin(client);
-	Blynk.virtualWrite(MANUAL_BUTTON, 0);
-	Blynk.virtualWrite(AUTOMATIC_BUTTON, 0);
-	Blynk.virtualWrite(TIME_DISPLAY, 0);
-	Blynk.setProperty(MANUAL_BUTTON, "color", BLYNK_GREEN);
-	Blynk.setProperty(AUTOMATIC_BUTTON, "color", BLYNK_GREEN);
+	Init_All_Controls();
+
 	ArduinoOTA.onStart([]() {
 	  Serial.println("OTA Start");
 	});
