@@ -25,6 +25,8 @@
 #define RADIADOR_TARGET		1
 #define CALDERA_TARGET		0
 
+#define PERIOD_TO_READ_FROM_THINGSPEAK	30000
+
 //To be changed when RADIADOR TARGET is connected
 //#define DEVICE_CONTROL_TARGET		CALDERA_TARGET
 #define DEVICE_CONTROL_TARGET		RADIADOR_TARGET
@@ -45,6 +47,8 @@ int everySec = 1;
 WiFiServer TelnetServer(8266);
 int deviceControl = 0;
 char* deviceControlLogic[2] = {"Caldera","Radiador"};
+long int timeCurrent=0;
+long int timeLast=0;
 
 void Init_All_Controls()
 {
@@ -103,16 +107,17 @@ void taskUpdateValues()
 			everySec = 1;
 			if (statusCode == 200)
 			{
-			  Serial.printf("%ds,Temperature in Salon %.2f ºC (%s)\n\r",
+				Serial.printf("%ds,Temperature in Salon %.2f ºC (%s)\n\r",
 					  timeSecondsTotalRunning,tempSalon,deviceControlLogic[deviceControl]);
+				Blynk.virtualWrite(TIME_DISPLAY, timeSecondsRunning/60);
+				Blynk.virtualWrite(TEMPERATURE_GAUGE, tempSalon);
+				Blynk.virtualWrite(TIME_TOTAL_HOURS_DISPLAY, timeSecondsTotalRunning/3600);
 			}
 			else
 			{
 			  Serial.println("Unable to read channel / No internet connection");
 			}
-			Blynk.virtualWrite(TIME_DISPLAY, timeSecondsRunning/60);
-			Blynk.virtualWrite(TEMPERATURE_GAUGE, tempSalon);
-			Blynk.virtualWrite(TIME_TOTAL_HOURS_DISPLAY, timeSecondsTotalRunning/3600);
+
 		}
 	}
     else
@@ -211,7 +216,16 @@ void setup()
 	pinMode(relay, OUTPUT);
 	ThingSpeak.begin(client);
 	Init_All_Controls();
-
+	tempSalon = ThingSpeak.readFloatField(channelTempSalon, FieldNumber1, thingSpeakReadAPIKey_Salon);
+	statusCode = ThingSpeak.getLastReadStatus();
+	if (statusCode == 200)
+	{
+		timeLast = millis();
+	}
+	else
+	{
+		timeLast = 0;
+	}
 	ArduinoOTA.onStart([]() {
 	  Serial.println("OTA Start");
 	});
@@ -238,8 +252,26 @@ void loop()
 {
 	Blynk.run();
 	timer.run();
-	tempSalon = ThingSpeak.readFloatField(channelTempSalon, FieldNumber1, thingSpeakReadAPIKey_Salon);
-	statusCode = ThingSpeak.getLastReadStatus();
+	timeCurrent = millis();
+	if(timeCurrent >= timeLast)
+	{
+		if((timeCurrent-timeLast) >= PERIOD_TO_READ_FROM_THINGSPEAK)
+		{
+			Serial.println("Getting data from ThingSpeak");
+			tempSalon = ThingSpeak.readFloatField(channelTempSalon, FieldNumber1, thingSpeakReadAPIKey_Salon);
+			statusCode = ThingSpeak.getLastReadStatus();
+			timeLast = timeCurrent;
+		}
+	}
+	else
+	{
+		if((timeLast - timeCurrent) >= PERIOD_TO_READ_FROM_THINGSPEAK)
+		{
+			tempSalon = ThingSpeak.readFloatField(channelTempSalon, FieldNumber1, thingSpeakReadAPIKey_Salon);
+			statusCode = ThingSpeak.getLastReadStatus();
+			timeLast = timeCurrent;
+		}
+	}
 	ArduinoOTA.handle();
 }
 
